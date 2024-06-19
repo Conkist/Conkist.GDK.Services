@@ -1,0 +1,22 @@
+{
+    "name": "me.conkist.gdk.services",
+    "version": "0.1.0",
+    "displayName": "Conkist.GDK.Services",
+    "description": "Package that contains a set of scripts for server access and development optimization",
+    "unity": "2022.3",
+    "unityRelease": "26f1",
+    "documentationUrl": "https://docs.realima.tech/tools.html",
+    "changelogUrl": "https://package.realima.tech/tools/changelog.html",
+    "licensesUrl": "https://conkist.notion.site/Licensing-5b4194f03e48417da78fa2047cb0dea9",
+    "keywords": [
+        "editor",
+        "tools",
+        "service"
+    ],
+    "author": {
+        "name": "Conkist",
+        "email": "renato.conkist@gmail.com",
+        "url": "https://www.conkist.me/"
+    },
+    "type": "tool"
+}
