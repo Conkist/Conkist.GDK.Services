@@ -1,6 +1,6 @@
 {
     "name": "Conkist.GDK.Services",
-    "rootNamespace": "Conkist",
+    "rootNamespace": "Conkist.GDK.Services",
     "references": [
         "GUID:3ed031bfa9371814e8740aebda3d0878",
         "GUID:f51ebe6a0ceec4240a699833d6309b23"

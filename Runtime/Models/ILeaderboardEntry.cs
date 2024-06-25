@@ -1,22 +1,43 @@
-namespace Conkist.Services
+namespace Conkist.GDK.Services
 {
-    public struct ILeaderboardEntry {
+    /// <summary>
+    /// Represents an entry in the leaderboard with player information.
+    /// </summary>
+    public struct LeaderboardEntry
+    {
+        /// <summary>
+        /// Gets the ID of the player.
+        /// </summary>
+        public string PlayerId { get; }
 
-        private string _playerId;
-        public string PlayerId => _playerId;
-        private string _username;
-        public string Username => _username;
-        private int _pos;
-        public int Position => _pos;
-        private int _value;
-        public int Value => _value;
+        /// <summary>
+        /// Gets the username of the player.
+        /// </summary>
+        public string Username { get; }
 
-        public ILeaderboardEntry(string playerId, string username, int position, int value)
+        /// <summary>
+        /// Gets the position of the player in the leaderboard.
+        /// </summary>
+        public int Position { get; }
+
+        /// <summary>
+        /// Gets the score value of the player.
+        /// </summary>
+        public int Value { get; }
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="LeaderboardEntry"/> struct.
+        /// </summary>
+        /// <param name="playerId">The ID of the player.</param>
+        /// <param name="username">The username of the player.</param>
+        /// <param name="position">The position of the player in the leaderboard.</param>
+        /// <param name="value">The score value of the player.</param>
+        public LeaderboardEntry(string playerId, string username, int position, int value)
         {
-            this._username = username;
-            this._pos = position;
-            this._value = value;
-            this._playerId = playerId;
+            PlayerId = playerId;
+            Username = username;
+            Position = position;
+            Value = value;
         }
     }
 }
