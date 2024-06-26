@@ -1,1 +1,0 @@
-This package will have all functions to work as a library to access everything playfab has to offer and later adapt it for a dedicated service with my own UI

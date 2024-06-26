@@ -1,6 +1,6 @@
 {
-    "name": "Conkist.Services.Playfab",
-    "rootNamespace": "",
+    "name": "Conkist.GDK.Services.Playfab",
+    "rootNamespace": "Conkist.GDK.Services.Playfab",
     "references": [
         "GUID:3ed031bfa9371814e8740aebda3d0878",
         "GUID:51ded44c943a944faa74b237c627151d",

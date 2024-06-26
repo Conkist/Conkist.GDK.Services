@@ -1,6 +1,6 @@
 using System;
 
-namespace Conkist.Services
+namespace Conkist.GDK.Services
 {
     /// <summary>
     /// The idea of this attribute is to control the methods to be used only when a backendservice is authenticated

@@ -1,8 +1,8 @@
 using UnityEngine;
 using UnityEngine.Events;
-using Conkist.Tools;
+using Cysharp.Threading.Tasks;
 
-namespace Conkist.Services.Backend
+namespace Conkist.GDK.Services.Backend
 {
     /// <summary>
     /// A game, for a bunch of reasons, must have only one Backend Service
@@ -19,9 +19,9 @@ namespace Conkist.Services.Backend
 
         private void Start() {
             if(_autoLogin)
-                Login();
+                LoginAsync();
         }
 
-        public abstract void Login();
+        public abstract UniTask LoginAsync();
     }
 }
