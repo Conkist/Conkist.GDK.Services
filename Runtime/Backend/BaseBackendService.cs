@@ -15,13 +15,18 @@ namespace Conkist.GDK.Services.Backend
         [SerializeField] protected bool _autoLogin = true;
         [SerializeField] protected UnityEvent _onLoggedIn;
 
+        public UnityAction<string> onServiceLog;
         public UnityAction onError;
 
-        private void Start() {
+        protected virtual void Start() {
             if(_autoLogin)
-                LoginAsync();
+                LoginAsync().Forget();
         }
 
-        public abstract UniTask LoginAsync();
+        public async virtual UniTask<string> LoginAsync() { await UniTask.Yield(); return null; }
+        public async virtual UniTask<string> LoginAsync(string user, string password) { await UniTask.Yield(); return null; }
+        public async virtual UniTask SignUpAsync(string user, string password) { await UniTask.Yield(); }
+        public async virtual UniTask PasswordRecoverAsync(string user) { await UniTask.Yield(); }
+        public async virtual UniTask DeleteAsync(string user, string confirmationCode) { await UniTask.Yield(); }
     }
 }
