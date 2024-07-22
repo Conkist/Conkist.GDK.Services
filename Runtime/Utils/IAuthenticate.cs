@@ -10,7 +10,7 @@ namespace Conkist.GDK.Services
         /// <summary>
         /// Sends a blank login request that might return some value
         /// </summary>
-        /// <returns>A UniTask representing the asynchronous operation.</returns>
-        UniTask LoginAsync();
+        /// <returns>A UniTask representing the asynchronous operation with serialized json data from server</returns>
+        UniTask<string> LoginAsync();
     }
 }

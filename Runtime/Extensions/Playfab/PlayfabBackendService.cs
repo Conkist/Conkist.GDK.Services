@@ -5,6 +5,7 @@ using System;
 using UnityEngine.Events;
 using Conkist.GDK.Services.Backend;
 using Cysharp.Threading.Tasks;
+using System.Threading;
 
 namespace Conkist.GDK.Services.Playfab
 {
@@ -28,11 +29,14 @@ namespace Conkist.GDK.Services.Playfab
         /// </summary>
         [SerializeField] protected UnityEvent _onProfileLoaded;
 
+        private CancellationToken loginCancelation;
+
         /// <summary>
         /// Asynchronously logs in the user using PlayFab with a custom ID.
         /// </summary>
-        public async override UniTask LoginAsync()
+        public async override UniTask<string> LoginAsync()
         {
+            loginCancelation = new CancellationToken();
             var request = new LoginWithCustomIDRequest
             {
                 CustomId = SystemInfo.deviceUniqueIdentifier,
@@ -40,6 +44,9 @@ namespace Conkist.GDK.Services.Playfab
             };
 
             PlayFabClientAPI.LoginWithCustomID(request, OnLoginSuccess, OnError);
+            await UniTask.WaitUntilCanceled(loginCancelation);
+
+            return null;
         }
 
         /// <summary>
@@ -49,6 +56,7 @@ namespace Conkist.GDK.Services.Playfab
         /// <param name="result">The result from the login request.</param>
         private void OnLoginSuccess(LoginResult result)
         {
+            loginCancelation = new CancellationToken(true);
             Debug.Log(result.NewlyCreated ? $"[{GetType().Name}] Account Created!" : $"[{GetType().Name}] Logged In!", this);
             Debug.Log($"[{GetType().Name}] PlayfabId: {result.PlayFabId}", this);
 
@@ -137,6 +145,7 @@ namespace Conkist.GDK.Services.Playfab
         /// <param name="error">The error information from PlayFab.</param>
         private void OnError(PlayFabError error)
         {
+            loginCancelation = new CancellationToken(true);
             Debug.LogWarning(error.GenerateErrorReport());
 
             // Handle specific error codes.

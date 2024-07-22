@@ -4,6 +4,7 @@
     "references": [
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner",
+        "UniTask",
         "Conkist.GDK",
         "Conkist.GDK.Services"
     ],
