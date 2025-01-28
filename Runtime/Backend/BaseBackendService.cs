@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.Events;
 using Cysharp.Threading.Tasks;
+using UnityEngine.Networking;
 
 namespace Conkist.GDK.Services.Backend
 {

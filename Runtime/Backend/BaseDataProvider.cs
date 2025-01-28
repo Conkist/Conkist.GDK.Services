@@ -2,6 +2,7 @@ using UnityEngine;
 using UnityEngine.Events;
 using Cysharp.Threading.Tasks;
 using System.Collections.Generic;
+using Newtonsoft.Json;
 
 namespace Conkist.GDK.Services.Backend
 {
@@ -11,15 +12,25 @@ namespace Conkist.GDK.Services.Backend
     public abstract class BaseDataProvider : Singleton<BaseDataProvider>
     {
         /// <summary>
-        /// Dictionary to store cached data.
+        /// Dictionary to store app cached data.
         /// </summary>
-        protected static Dictionary<string, string> _cachedData = new Dictionary<string, string>();
+        protected static Dictionary<string, string> _cachedAppData = new Dictionary<string, string>();
+        public static Dictionary<string,string> CachedAppData => _cachedAppData;
+    
+        /// <summary>
+        /// Dictionary to store player cached data.
+        /// </summary>
+        protected static Dictionary<string, string> _cachedPlayerData = new Dictionary<string, string>();
+        public static Dictionary<string,string> CachedPlayerData => _cachedPlayerData;
 
         /// <summary>
         /// Event triggered when data is fetched successfully.
         /// </summary>
         [SerializeField]
-        protected UnityEvent _onDataFetched = new UnityEvent();
+        protected UnityEvent _onAppDataFetched = new UnityEvent();
+
+        [SerializeField]
+        protected UnityEvent _onPlayerDataFetched = new UnityEvent();
 
         /// <summary>
         /// Action invoked when an error occurs during data fetching.
@@ -27,26 +38,53 @@ namespace Conkist.GDK.Services.Backend
         public UnityAction? onError;
 
         /// <summary>
-        /// Fetches the data synchronously.
+        /// Fetches the app data synchronously.
         /// Must be implemented by derived classes.
         /// </summary>
-        public abstract void FetchData();
+        public abstract void FetchAppData();
 
         /// <summary>
-        /// Fetches the data asynchronously.
+        /// Fetches the app data asynchronously.
         /// </summary>
         /// <returns>A UniTask representing the asynchronous operation.</returns>
-        public virtual async UniTask FetchDataAsync()
+        public virtual async UniTask FetchAppDataAsync()
         {
             await UniTask.Yield();
         }
 
         /// <summary>
-        /// Invokes the onDataFetched event if it has listeners.
+        /// Fetches the player data synchronously.
+        /// Must be implemented by derived classes.
         /// </summary>
-        protected void InvokeDataFetched()
+        public abstract void FetchPlayerData();
+
+        /// <summary>
+        /// Fetches the player data asynchronously.
+        /// </summary>
+        /// <returns>A UniTask representing the asynchronous operation.</returns>
+        public virtual async UniTask FetchPlayerDataAsync()
         {
-            _onDataFetched?.Invoke();
+            await UniTask.Yield();
+        }
+
+        /// <summary>
+        /// Invokes the onAppDataFetched event if it has listeners.
+        /// </summary>
+        protected void InvokeAppDataFetched()
+        {
+            var json = JsonConvert.SerializeObject(_cachedAppData, Formatting.Indented);
+            Debug.Log("Fetched data: " + json);
+            _onAppDataFetched?.Invoke();
+        }
+
+        /// <summary>
+        /// Invokes the onPlayerDataFetched event if it has listeners.
+        /// </summary>
+        protected void InvokePlayerDataFetched()
+        {
+            var json = JsonConvert.SerializeObject(_cachedPlayerData, Formatting.Indented);
+            Debug.Log("Fetched data: " + json);
+            _onPlayerDataFetched?.Invoke();
         }
 
         /// <summary>

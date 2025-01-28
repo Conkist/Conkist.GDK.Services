@@ -1,0 +1,25 @@
+{
+    "name": "Conkist.GDK.Services.Unity",
+    "rootNamespace": "Conkist.GDK.Services.Unity",
+    "references": [
+        "GUID:fe25561d224ed4743af4c60938a59d0b",
+        "GUID:5540e30183c82e84b954c033c388e06c",
+        "GUID:30e7a851ec87b44ad956804ca8ebf15c",
+        "GUID:9d6c7830d9ab746a7a12f144bdeeee7c",
+        "GUID:be0d2672886cc45b2bcea5a5053a5347",
+        "GUID:f51ebe6a0ceec4240a699833d6309b23",
+        "GUID:3ed031bfa9371814e8740aebda3d0878",
+        "GUID:51ded44c943a944faa74b237c627151d"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "USE_UGS"
+    ],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
