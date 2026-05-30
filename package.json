@@ -18,5 +18,9 @@
         "email": "renato.conkist@gmail.com",
         "url": "https://www.conkist.me/"
     },
-    "type": "tool"
+    "type": "tool",
+    "dependencies": {
+        "me.conkist.gdk.core": "0.1.0",
+        "com.cysharp.unitask": "2.5.11"
+    }
 }
