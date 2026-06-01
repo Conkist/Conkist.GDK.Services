@@ -9,7 +9,7 @@ namespace Conkist.GDK.Services.Backend
     /// <summary>
     /// Abstract base class for data providers.
     /// </summary>
-    public abstract class BaseDataProvider : Singleton<BaseDataProvider>
+    public abstract class BaseDataProvider : SingletonBehaviour<BaseDataProvider>
     {
         /// <summary>
         /// Dictionary to store app cached data.

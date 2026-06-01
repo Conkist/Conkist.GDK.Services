@@ -9,7 +9,7 @@ namespace Conkist.GDK.Services.Backend
     /// A game, for a bunch of reasons, must have only one Backend Service
     /// </para>A place where all data from the game and player is stored, with a cloud service to run functions to manage this data and control remotelly it
     /// </summary>
-    public abstract class BaseBackendService : Singleton<BaseBackendService>, IAuthenticate
+    public abstract class BaseBackendService : SingletonBehaviour<BaseBackendService>, IAuthenticate
     {
         public static BackendUserProfile UserProfile { get; protected set; }
 

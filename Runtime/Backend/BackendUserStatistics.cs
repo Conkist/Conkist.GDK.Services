@@ -5,7 +5,7 @@ using UnityEngine;
 namespace Conkist.GDK.Services.Backend
 {
     [RequireComponent(typeof(BaseBackendService))]
-    public abstract class BackendUserStatistics : Singleton<BackendUserStatistics>
+    public abstract class BackendUserStatistics : SingletonBehaviour<BackendUserStatistics>
     {
         protected List<KeyValuePair<string, int>> _statistics = new List<KeyValuePair<string, int>>();
 
