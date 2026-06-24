@@ -13,7 +13,10 @@
         ""
     ],
     "autoReferenced": true,
-    "defineConstraints": [],
+    "defineConstraints": [
+        "CONKIST_UNITASK",
+        "CONKIST_GDK_CORE"
+    ],
     "versionDefines": [
         {
             "name": "com.cysharp.unitask",

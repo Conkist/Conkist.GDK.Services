@@ -20,7 +20,6 @@
     },
     "type": "tool",
     "dependencies": {
-        "me.conkist.gdk.core": "0.1.0",
-        "com.cysharp.unitask": "2.5.11"
+        "me.conkist.gdk.core": "0.1.0"
     }
 }
