@@ -30,8 +30,7 @@ namespace Conkist.GDK.Services.Conkist
         [Tooltip("The Public API Key for your Conkist project (pk_live_...). Never use Secret Keys in client code.")]
         [SerializeField] private string _publicKey;
 
-        [Tooltip("The Secret API Key for your Conkist project (sk_live_...). Only needed to generate connection QR codes.")]
-        [SerializeField] private string _secretKey;
+        private string _secretKey;
 
         [Tooltip("Debug API URL. Only used in Development Builds. Leave empty to use production (api.conkist.me).")]
         [SerializeField] private string _debugApiUrl;
@@ -49,8 +48,6 @@ namespace Conkist.GDK.Services.Conkist
         [Space, Header("Events")]
         [SerializeField] private UnityEvent _onInitialized;
         [SerializeField] private UnityEvent _onInitializationFailed;
-        [SerializeField] private UnityEvent<Texture2D> _onQRCodeGenerated;
-        [SerializeField] private UnityEvent<string> _onCodeReceived;
 
         // C# Events
         public event Action OnSessionInitialized;
@@ -121,8 +118,10 @@ namespace Conkist.GDK.Services.Conkist
         /// Configures the service programmatically. Can be called before Start().
         /// </summary>
         /// <param name="publicKey">The public API key (pk_live_...).</param>
+        /// <param name="secretKey">The secret API key (sk_live_...). Can be stored during session or persisted.</param>
         /// <param name="debugApiUrl">Optional debug API URL for development builds.</param>
-        public void Setup(string publicKey, string secretKey = null, string debugApiUrl = null)
+        /// <param name="persistSecret">If true, persists the secret key across restarts using PlayerPrefs.</param>
+        public void Setup(string publicKey, string secretKey = null, string debugApiUrl = null, bool persistSecret = false)
         {
             _publicKey = publicKey;
             _secretKey = secretKey;
@@ -170,11 +169,16 @@ namespace Conkist.GDK.Services.Conkist
 
             onServiceLog?.Invoke($"Initializing with API: {EffectiveApiUrl}");
 
-            var response = await _apiClient.InitializeSessionAsync(_publicKey);
+            var savedPlayerId = PlayerPrefs.GetString("Conkist_PlayerId", null);
+            var response = await _apiClient.InitializeSessionAsync(_publicKey, savedPlayerId);
 
             if (response.IsSuccess && response.Data != null)
             {
                 _session.PlayerId = response.Data.PlayerId;
+                
+                // Persist the PlayerId locally so it can be reused in future sessions
+                PlayerPrefs.SetString("Conkist_PlayerId", _session.PlayerId);
+                PlayerPrefs.Save();
                 _session.SessionToken = response.Data.SessionToken;
                 _session.ExpiresAt = DateTime.UtcNow.AddMinutes(TokenLifetimeMinutes);
                 UpdateSessionTimes(_session.ExpiresAt);
@@ -222,7 +226,8 @@ namespace Conkist.GDK.Services.Conkist
 
             onServiceLog?.Invoke("Token expiring soon, refreshing session...");
 
-            var response = await _apiClient.InitializeSessionAsync(_publicKey);
+            var savedPlayerId = PlayerPrefs.GetString("Conkist_PlayerId", null);
+            var response = await _apiClient.InitializeSessionAsync(_publicKey, savedPlayerId);
 
             if (response.IsSuccess && response.Data != null)
             {
@@ -270,15 +275,7 @@ namespace Conkist.GDK.Services.Conkist
             if (_cachedQRCode != null)
                 return _cachedQRCode;
 
-            if (string.IsNullOrEmpty(_secretKey))
-            {
-                // Fallback to synchronous generation of legacy link
-                string legacyLink = $"https://app.conkist.me/connect?token={Uri.EscapeDataString(_session.SessionToken)}&playerId={_session.PlayerId}";
-                _cachedQRCode = QRCodeGenerator.Generate(legacyLink, size);
-                return _cachedQRCode;
-            }
-
-            Debug.LogWarning("[ConkistSDK] Synchronous GetConnectionQRCode called but QR code is not generated. Use GetConnectionQRCodeAsync instead.");
+            Debug.LogWarning("[ConkistSDK] Synchronous GetConnectionQRCode is deprecated and not supported. Use GetConnectionQRCodeAsync instead.");
             return null;
         }
 
@@ -306,21 +303,8 @@ namespace Conkist.GDK.Services.Conkist
         {
             if (_session == null || !_session.IsValid) return null;
 
-            if (string.IsNullOrEmpty(_secretKey))
-            {
-                Debug.LogWarning("[ConkistSDK] Secret Key is not configured. Falling back to legacy deep-link format.");
-                // Build legacy deep-link URL for the Conkist mobile app
-                string legacyLink = $"https://app.conkist.me/connect?token={Uri.EscapeDataString(_session.SessionToken)}&playerId={_session.PlayerId}";
-                _cachedQRCode = QRCodeGenerator.Generate(legacyLink, pixelsPerModule);
-                
-                LastRefreshTime = DateTime.UtcNow;
-                NextRefreshTime = _session.ExpiresAt.AddSeconds(-30);
-                
-                return _cachedQRCode;
-            }
-
             onServiceLog?.Invoke("Requesting short link token from backend...");
-            var response = await _apiClient.CreateLinkRequestAsync(_session.PlayerId, _secretKey);
+            var response = await _apiClient.CreateLinkRequestAsync(_session.SessionToken);
 
             if (response.IsSuccess && response.Data != null)
             {
@@ -335,8 +319,6 @@ namespace Conkist.GDK.Services.Conkist
                     NextRefreshTime = _session.ExpiresAt.AddSeconds(-30);
 
                     onServiceLog?.Invoke($"QR code generated for account linking. Code: {response.Data.Code}");
-                    _onQRCodeGenerated?.Invoke(_cachedQRCode);
-                    _onCodeReceived?.Invoke(ConnectionCode);
                     OnConnectionCodeReceived?.Invoke(ConnectionCode);
                 }
                 else
@@ -346,15 +328,25 @@ namespace Conkist.GDK.Services.Conkist
             }
             else
             {
-                string errorMsg = response.StatusCode == 401
-                    ? "Acesso inválido. Verifique o seu Secret Key."
-                    : $"Link request failed ({response.StatusCode}): {response.ErrorMessage}";
-
+                string errorMsg = $"Link request failed ({response.StatusCode}): {response.ErrorMessage}";
                 Debug.LogError($"[ConkistSDK] {errorMsg}");
                 onServiceLog?.Invoke(errorMsg);
             }
 
             return _cachedQRCode;
+        }
+
+        /// <summary>
+        /// Checks the status of the current connection code (polling endpoint).
+        /// </summary>
+        public async UniTask<ApiResponse<GetLinkStatusResponse>> CheckLinkStatusAsync()
+        {
+            if (!_isInitialized || _session == null || !_session.IsValid || string.IsNullOrEmpty(ConnectionCode))
+            {
+                return ApiResponse<GetLinkStatusResponse>.Failure(400, "SDK not initialized or Connection Code missing.");
+            }
+
+            return await _apiClient.GetLinkStatusAsync(ConnectionCode, _session.SessionToken);
         }
 
         /// <summary>
@@ -470,7 +462,8 @@ namespace Conkist.GDK.Services.Conkist
                     Debug.LogWarning("[ConkistSDK] 401 Unauthorized on telemetry send. Refreshing session...");
                     _session.SessionToken = null;
 
-                    var refreshResponse = await _apiClient.InitializeSessionAsync(_publicKey);
+                    var savedPlayerId = PlayerPrefs.GetString("Conkist_PlayerId", null);
+                    var refreshResponse = await _apiClient.InitializeSessionAsync(_publicKey, savedPlayerId);
                     if (refreshResponse.IsSuccess && refreshResponse.Data != null)
                     {
                         _session.SessionToken = refreshResponse.Data.SessionToken;

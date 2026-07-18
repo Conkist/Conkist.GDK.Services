@@ -28,9 +28,9 @@ namespace Conkist.GDK.Services.Conkist
         /// <returns>
         /// ApiResponse containing the deserialized InitializeResponse or error info.
         /// </returns>
-        public async UniTask<ApiResponse<InitializeResponse>> InitializeSessionAsync(string publicKey)
+        public async UniTask<ApiResponse<InitializeResponse>> InitializeSessionAsync(string publicKey, string playerId = null)
         {
-            var requestBody = JsonConvert.SerializeObject(new { publicKey });
+            var requestBody = JsonConvert.SerializeObject(new { publicKey, playerId });
 
             using (var request = CreatePostRequest($"{_baseUrl}/v1/sdk/initialize", requestBody))
             {
@@ -49,15 +49,15 @@ namespace Conkist.GDK.Services.Conkist
 
         /// <summary>
         /// Calls POST /v1/sdk/links to generate a short account linking code.
-        /// Authenticated by the project's Secret Key.
+        /// Authenticated by the session token (JWT).
         /// </summary>
-        public async UniTask<ApiResponse<CreateSdkLinkResponse>> CreateLinkRequestAsync(string userId, string secretKey)
+        public async UniTask<ApiResponse<CreateSdkLinkResponse>> CreateLinkRequestAsync(string sessionToken)
         {
-            var requestBody = JsonConvert.SerializeObject(new { userId });
+            var requestBody = JsonConvert.SerializeObject(new { });
 
             using (var request = CreatePostRequest($"{_baseUrl}/v1/sdk/links", requestBody))
             {
-                request.SetRequestHeader("Authorization", $"Bearer {secretKey}");
+                request.SetRequestHeader("Authorization", $"Bearer {sessionToken}");
 
                 try
                 {
@@ -69,6 +69,29 @@ namespace Conkist.GDK.Services.Conkist
                 }
 
                 return ParseResponse<CreateSdkLinkResponse>(request);
+            }
+        }
+
+        /// <summary>
+        /// Calls GET /v1/sdk/links/{code}/status to check the linking status.
+        /// Authenticated by the session token (JWT).
+        /// </summary>
+        public async UniTask<ApiResponse<GetLinkStatusResponse>> GetLinkStatusAsync(string code, string sessionToken)
+        {
+            using (var request = UnityWebRequest.Get($"{_baseUrl}/v1/sdk/links/{code}/status"))
+            {
+                request.SetRequestHeader("Authorization", $"Bearer {sessionToken}");
+
+                try
+                {
+                    await request.SendWebRequest();
+                }
+                catch (Exception ex)
+                {
+                    return ApiResponse<GetLinkStatusResponse>.NetworkError(ex.Message);
+                }
+
+                return ParseResponse<GetLinkStatusResponse>(request);
             }
         }
 
@@ -197,5 +220,15 @@ namespace Conkist.GDK.Services.Conkist
 
         [JsonProperty("deeplink")]
         public string Deeplink { get; set; }
+    }
+
+    [Serializable]
+    public class GetLinkStatusResponse
+    {
+        [JsonProperty("status")]
+        public string Status { get; set; }
+
+        [JsonProperty("accountId")]
+        public long? AccountId { get; set; }
     }
 }
