@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Compatibility
 
-- Requires Unity 6000.3 or newer, `me.conkist.gdk.core` 0.1.0, UniTask 2.5.10 and Newtonsoft.Json 3.2.2.
+- Requires Unity 6000.3 or newer, `me.conkist.gdk.core` 0.1.0, Newtonsoft.Json 3.2.2 (automatic) and UniTask 2.5.x (add it by git URL; it is not in the Unity registry).
 
 ## [Unreleased]
 

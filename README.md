@@ -8,7 +8,7 @@
 |---|---|
 | Version | 0.2.0 (see [CHANGELOG](CHANGELOG.md)) |
 | Unity | 6000.3 or newer |
-| Depends on | `me.conkist.gdk.core`, `com.cysharp.unitask`, `com.unity.nuget.newtonsoft-json` |
+| Depends on | `me.conkist.gdk.core`, `com.unity.nuget.newtonsoft-json` (automatic). `com.cysharp.unitask` (add it by git URL). |
 | Main class | `Conkist.GDK.Services.Conkist.ConkistBackendService` |
 
 ## Install
@@ -19,7 +19,8 @@
 {
   "dependencies": {
     "me.conkist.gdk.core": "https://github.com/Conkist/Conkist.GDK.Core.git",
-    "me.conkist.gdk.services": "https://github.com/Conkist/Conkist.GDK.Services.git#0.2.0"
+    "me.conkist.gdk.services": "https://github.com/Conkist/Conkist.GDK.Services.git#0.2.0",
+    "com.cysharp.unitask": "https://github.com/Cysharp/UniTask.git?path=src/UniTask/Assets/Plugins/UniTask#2.5.11"
   }
 }
 ```
