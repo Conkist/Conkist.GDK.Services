@@ -3,455 +3,249 @@ using Cysharp.Threading.Tasks;
 using System;
 using System.Collections.Generic;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
-using Conkist.GDK.Loading;
+using System.Threading.Tasks;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace Conkist.GDK.Services.Backend
 {
     /// <summary>
-    /// Conkist API Service - integrates GDK with conkist-api for game data,
-    /// user management, and account linking.
+    /// High-level Conkist API service for games (initialize, links, telemetry, game and user data).
+    ///
+    /// Routes that EXIST on conkist-api today (SdkController):
+    ///   POST /v1/sdk/initialize            -> { playerId, sessionToken }   (5-minute session JWT)
+    ///   POST /v1/sdk/telemetry             -> 202                          (Bearer)
+    ///   POST /v1/sdk/links                 -> { code, deeplink }           (Bearer)
+    ///   GET  /v1/sdk/links/{code}/status   -> { status, accountId }        (Bearer)
+    ///
+    /// Routes marked "PLANNED" below are NOT on the server yet. They return null/false/empty
+    /// (HTTP 404) until conkist-api implements them. Do not treat that as a client bug.
+    ///
+    /// The API has no response envelope: success is the HTTP status, errors are { message }.
+    /// Error strategy: expected failures (network, timeout, HTTP error) return null/false/empty
+    /// and log. Programming errors (null arguments, malformed JSON) throw.
     /// </summary>
+    [Obsolete("Deprecated in 0.2.0, removed in the next minor version. Use Conkist.GDK.Services.Conkist.ConkistBackendService. Most routes of this class do not exist on the server.")]
     public class ConkistApiService : BaseBackendService
     {
+        private const string ProductionApiUrl = "https://api.conkist.me";
+        private const float REQUEST_TIMEOUT = 30f;
+        private const long SessionLifetimeSeconds = 300;   // server issues 5-minute session tokens
+        private const long LinkLifetimeSeconds = 900;      // server expires pending links after 15 minutes
+
+        [SerializeField] private string _apiBaseUrl = ProductionApiUrl;
+
         private HttpClient _httpClient;
-        private string _apiBaseUrl = "https://api.conkist.me/api/v1";
+        private string _publicKey;
         private string _gameId;
         private string _currentUserId;
+        private string _sessionToken;
         private AuthToken _currentAuthToken;
-        private const float REQUEST_TIMEOUT = 30f;
 
-        protected override void Start()
-        {
-            base.Start();
-            _httpClient = new HttpClient();
-            _httpClient.Timeout = TimeSpan.FromSeconds(REQUEST_TIMEOUT);
-        }
+        // Created lazily: Start() runs a frame after AddComponent, and callers (and tests) can call earlier.
+        private HttpClient Http => _httpClient ??= new HttpClient { Timeout = TimeSpan.FromSeconds(REQUEST_TIMEOUT) };
 
-        private void OnDestroy()
+        protected override void OnDestroy()
         {
             _httpClient?.Dispose();
+            base.OnDestroy();
         }
 
+        // ==================== Session ====================
+
         /// <summary>
-        /// Initialize connection with conkist-api.
-        /// Expected errors: invalid apiKey, network timeout → ApiResponse.Success = false
-        /// Extraordinary errors: null references → throw Exception
+        /// Opens a session. <paramref name="apiKey"/> is the project's PUBLIC key (the project is
+        /// resolved from it on the server). <paramref name="gameId"/> is kept client-side.
+        /// POST /v1/sdk/initialize
         /// </summary>
         public async UniTask<bool> InitializeAsync(string apiKey, string gameId)
         {
             if (string.IsNullOrEmpty(apiKey) || string.IsNullOrEmpty(gameId))
                 throw new ArgumentNullException(nameof(apiKey), "API key and game ID cannot be null");
 
-            try
-            {
-                _gameId = gameId;
-                var request = new { apiKey, gameId };
-                var json = JsonUtility.ToJson(request);
-                var content = new StringContent(json, Encoding.UTF8, "application/json");
+            _publicKey = apiKey;
+            _gameId = gameId;
 
-                var response = await _httpClient.PostAsync(
-                    $"{_apiBaseUrl}/games/initialize",
-                    content
-                ).AsUniTask();
+            var session = await OpenSessionAsync("initialize", playerId: null);
+            if (session == null) return false;
 
-                var responseBody = await response.Content.ReadAsStringAsync();
-                var apiResponse = JsonUtility.FromJson<ApiResponse<bool>>(responseBody);
-
-                if (!apiResponse.Success)
-                {
-                    Debug.LogError($"[ConkistApi] Initialize failed: {apiResponse.Message}");
-                    return false;
-                }
-
-                onServiceLog?.Invoke("[ConkistApi] Initialized successfully");
-                return true;
-            }
-            catch (HttpRequestException ex)
-            {
-                Debug.LogError($"[ConkistApi] Network error during initialize: {ex.Message}");
-                return false;
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"[ConkistApi] Unexpected error during initialize: {ex.Message}");
-                throw;
-            }
+            onServiceLog?.Invoke("[ConkistApi] Initialized successfully");
+            return true;
         }
 
+        /// <summary>Same as <c>LoginAsync(true)</c>. Overrides the base so parameterless calls work.</summary>
+        public override async UniTask<string> LoginAsync() => await LoginAsync(true);
+
         /// <summary>
-        /// Anonymous login - get gameUserId for this device/session.
+        /// The server has no separate login: <see cref="InitializeAsync"/> already issues the
+        /// anonymous playerId. This returns it and raises the logged-in event.
         /// </summary>
-        public async UniTask<string> LoginAsync(bool anonymous = true)
+        public async UniTask<string> LoginAsync(bool anonymous)
         {
-            if (string.IsNullOrEmpty(_gameId))
+            if (string.IsNullOrEmpty(_sessionToken))
             {
                 onServiceLog?.Invoke("[ConkistApi] Not initialized. Call InitializeAsync first.");
                 return null;
             }
 
-            try
+            await UniTask.Yield();
+            UserProfile = new BackendUserProfile(_currentUserId);
+            onServiceLog?.Invoke($"[ConkistApi] Logged in as {_currentUserId}");
+            _onLoggedIn?.Invoke();
+            return _currentUserId;
+        }
+
+        /// <summary>
+        /// The server has no refresh endpoint. Session tokens last 5 minutes, so a refresh
+        /// opens a new session for the same playerId. POST /v1/sdk/initialize
+        /// </summary>
+        public async UniTask<AuthToken> RefreshAuthTokenAsync()
+        {
+            if (string.IsNullOrEmpty(_currentUserId) || string.IsNullOrEmpty(_publicKey))
             {
-                var request = new { anonymous, gameId = _gameId };
-                var json = JsonUtility.ToJson(request);
-                var content = new StringContent(json, Encoding.UTF8, "application/json");
-
-                var response = await _httpClient.PostAsync(
-                    $"{_apiBaseUrl}/auth/login",
-                    content
-                ).AsUniTask();
-
-                var responseBody = await response.Content.ReadAsStringAsync();
-                var apiResponse = JsonUtility.FromJson<ApiResponse<string>>(responseBody);
-
-                if (!apiResponse.Success)
-                {
-                    Debug.LogWarning($"[ConkistApi] Login failed: {apiResponse.Message}");
-                    return null;
-                }
-
-                _currentUserId = apiResponse.Data;
-                UserProfile = new BackendUserProfile { UserId = _currentUserId };
-                onServiceLog?.Invoke($"[ConkistApi] Logged in as {_currentUserId}");
-                _onLoggedIn?.Invoke();
-
-                return _currentUserId;
-            }
-            catch (HttpRequestException ex)
-            {
-                Debug.LogError($"[ConkistApi] Network error during login: {ex.Message}");
+                Debug.LogWarning("[ConkistApi] Not logged in. Call InitializeAsync first.");
                 return null;
             }
-            catch (Exception ex)
-            {
-                Debug.LogError($"[ConkistApi] Unexpected error during login: {ex.Message}");
-                throw;
-            }
+
+            var session = await OpenSessionAsync("token refresh", _currentUserId);
+            return session == null ? null : _currentAuthToken;
         }
 
-        /// <summary>
-        /// Fetch server-side game configuration (read-only).
-        /// </summary>
-        public async UniTask<GameData> FetchGameDataAsync(string gameId)
-        {
-            if (string.IsNullOrEmpty(gameId))
-                throw new ArgumentNullException(nameof(gameId));
-
-            try
-            {
-                var response = await _httpClient.GetAsync(
-                    $"{_apiBaseUrl}/games/{gameId}"
-                ).AsUniTask();
-
-                var responseBody = await response.Content.ReadAsStringAsync();
-                var apiResponse = JsonUtility.FromJson<ApiResponse<GameData>>(responseBody);
-
-                if (!apiResponse.Success)
-                {
-                    Debug.LogWarning($"[ConkistApi] FetchGameData failed: {apiResponse.Message}");
-                    return null;
-                }
-
-                return apiResponse.Data;
-            }
-            catch (HttpRequestException ex)
-            {
-                Debug.LogError($"[ConkistApi] Network error fetching game data: {ex.Message}");
-                return null;
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"[ConkistApi] Unexpected error fetching game data: {ex.Message}");
-                throw;
-            }
-        }
+        // ==================== Account linking ====================
 
         /// <summary>
-        /// Fetch user profile and progress data.
-        /// </summary>
-        public async UniTask<UserData> FetchUserDataAsync(string userId)
-        {
-            if (string.IsNullOrEmpty(userId))
-                throw new ArgumentNullException(nameof(userId));
-
-            try
-            {
-                var response = await _httpClient.GetAsync(
-                    $"{_apiBaseUrl}/users/{userId}"
-                ).AsUniTask();
-
-                var responseBody = await response.Content.ReadAsStringAsync();
-                var apiResponse = JsonUtility.FromJson<ApiResponse<UserData>>(responseBody);
-
-                if (!apiResponse.Success)
-                {
-                    Debug.LogWarning($"[ConkistApi] FetchUserData failed: {apiResponse.Message}");
-                    return null;
-                }
-
-                return apiResponse.Data;
-            }
-            catch (HttpRequestException ex)
-            {
-                Debug.LogError($"[ConkistApi] Network error fetching user data: {ex.Message}");
-                return null;
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"[ConkistApi] Unexpected error fetching user data: {ex.Message}");
-                throw;
-            }
-        }
-
-        /// <summary>
-        /// Save or update user data (profile, progress, customData, statistics).
-        /// </summary>
-        public async UniTask<bool> SaveUserDataAsync(UserData userData)
-        {
-            if (userData == null)
-                throw new ArgumentNullException(nameof(userData));
-
-            try
-            {
-                var json = JsonUtility.ToJson(userData);
-                var content = new StringContent(json, Encoding.UTF8, "application/json");
-
-                var response = await _httpClient.PutAsync(
-                    $"{_apiBaseUrl}/users/{userData.UserId}",
-                    content
-                ).AsUniTask();
-
-                var responseBody = await response.Content.ReadAsStringAsync();
-                var apiResponse = JsonUtility.FromJson<ApiResponse<bool>>(responseBody);
-
-                if (!apiResponse.Success)
-                {
-                    Debug.LogWarning($"[ConkistApi] SaveUserData failed: {apiResponse.Message}");
-                    return false;
-                }
-
-                onServiceLog?.Invoke($"[ConkistApi] User data saved for {userData.UserId}");
-                return true;
-            }
-            catch (HttpRequestException ex)
-            {
-                Debug.LogError($"[ConkistApi] Network error saving user data: {ex.Message}");
-                return false;
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"[ConkistApi] Unexpected error saving user data: {ex.Message}");
-                throw;
-            }
-        }
-
-        /// <summary>
-        /// Generate time-limited token link for account linking (Game → Conkist App).
-        /// User scans this token in Conkist App to connect accounts.
+        /// Creates a short code (and deep link) the player scans in Conkist App. The player is
+        /// taken from the session token, so <paramref name="gameUserId"/> must be the current player.
+        /// POST /v1/sdk/links
         /// </summary>
         public async UniTask<TokenLink> GenerateTokenLinkAsync(string gameId, string gameUserId)
         {
             if (string.IsNullOrEmpty(gameId) || string.IsNullOrEmpty(gameUserId))
                 throw new ArgumentNullException("Game ID and user ID cannot be null");
 
-            try
+            var (ok, body) = await CallAsync(HttpMethod.Post, "/v1/sdk/links", new { }, "GenerateTokenLink");
+            if (!ok) return null;
+
+            var created = JsonConvert.DeserializeObject<CreateLinkResult>(body);
+            onServiceLog?.Invoke("[ConkistApi] Token link generated (expires in 15 min)");
+            return new TokenLink
             {
-                var request = new { gameId, gameUserId };
-                var json = JsonUtility.ToJson(request);
-                var content = new StringContent(json, Encoding.UTF8, "application/json");
-
-                var response = await _httpClient.PostAsync(
-                    $"{_apiBaseUrl}/links/generate",
-                    content
-                ).AsUniTask();
-
-                var responseBody = await response.Content.ReadAsStringAsync();
-                var apiResponse = JsonUtility.FromJson<ApiResponse<TokenLink>>(responseBody);
-
-                if (!apiResponse.Success)
-                {
-                    Debug.LogWarning($"[ConkistApi] GenerateTokenLink failed: {apiResponse.Message}");
-                    return null;
-                }
-
-                onServiceLog?.Invoke($"[ConkistApi] Token link generated (expires in 15 min)");
-                return apiResponse.Data;
-            }
-            catch (HttpRequestException ex)
-            {
-                Debug.LogError($"[ConkistApi] Network error generating token link: {ex.Message}");
-                return null;
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"[ConkistApi] Unexpected error generating token link: {ex.Message}");
-                throw;
-            }
+                LinkId = created.Code,
+                GameId = gameId,
+                GameUserId = gameUserId,
+                LinkToken = created.Code,
+                ExpiresAtUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + LinkLifetimeSeconds,
+                IsLinked = false,
+                Metadata = new Dictionary<string, object> { { "deeplink", created.Deeplink } }
+            };
         }
 
         /// <summary>
-        /// Send game events/telemetry to conkist-api for analytics.
+        /// Status of a link created by this player: "pending", "linked" or "expired".
+        /// GET /v1/sdk/links/{code}/status
         /// </summary>
-        public async UniTask<bool> EventTriggerAsync(GameEvent gameEvent)
+        public async UniTask<LinkStatus> GetLinkStatusAsync(string code)
         {
-            if (gameEvent == null)
-                throw new ArgumentNullException(nameof(gameEvent));
+            if (string.IsNullOrEmpty(code))
+                throw new ArgumentNullException(nameof(code));
 
-            try
-            {
-                var json = JsonUtility.ToJson(gameEvent);
-                var content = new StringContent(json, Encoding.UTF8, "application/json");
-
-                var response = await _httpClient.PostAsync(
-                    $"{_apiBaseUrl}/events",
-                    content
-                ).AsUniTask();
-
-                var responseBody = await response.Content.ReadAsStringAsync();
-                var apiResponse = JsonUtility.FromJson<ApiResponse<bool>>(responseBody);
-
-                if (!apiResponse.Success)
-                {
-                    Debug.LogWarning($"[ConkistApi] EventTrigger failed: {apiResponse.Message}");
-                    return false;
-                }
-
-                return true;
-            }
-            catch (HttpRequestException ex)
-            {
-                Debug.LogError($"[ConkistApi] Network error sending event: {ex.Message}");
-                return false;
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"[ConkistApi] Unexpected error sending event: {ex.Message}");
-                throw;
-            }
+            var (ok, body) = await CallAsync(HttpMethod.Get, $"/v1/sdk/links/{Uri.EscapeDataString(code)}/status", null, "GetLinkStatus");
+            return ok ? JsonConvert.DeserializeObject<LinkStatus>(body) : null;
         }
 
-        /// <summary>
-        /// Get all active link tokens for a user (optionally filtered by gameId).
-        /// </summary>
+        /// <summary>PLANNED (not on server): list links of a player. GET /v1/sdk/players/{userId}/links</summary>
         public async UniTask<List<TokenLink>> GetLinksAsync(string userId, string gameId = null)
         {
             if (string.IsNullOrEmpty(userId))
                 throw new ArgumentNullException(nameof(userId));
 
-            try
-            {
-                var url = $"{_apiBaseUrl}/users/{userId}/links";
-                if (!string.IsNullOrEmpty(gameId))
-                    url += $"?gameId={gameId}";
+            var path = $"/v1/sdk/players/{Uri.EscapeDataString(userId)}/links";
+            if (!string.IsNullOrEmpty(gameId)) path += $"?gameId={Uri.EscapeDataString(gameId)}";
 
-                var response = await _httpClient.GetAsync(url).AsUniTask();
-                var responseBody = await response.Content.ReadAsStringAsync();
-                var apiResponse = JsonUtility.FromJson<ApiResponse<List<TokenLink>>>(responseBody);
-
-                if (!apiResponse.Success)
-                {
-                    Debug.LogWarning($"[ConkistApi] GetLinks failed: {apiResponse.Message}");
-                    return new List<TokenLink>();
-                }
-
-                return apiResponse.Data ?? new List<TokenLink>();
-            }
-            catch (HttpRequestException ex)
-            {
-                Debug.LogError($"[ConkistApi] Network error fetching links: {ex.Message}");
-                return new List<TokenLink>();
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"[ConkistApi] Unexpected error fetching links: {ex.Message}");
-                throw;
-            }
+            var (ok, body) = await CallAsync(HttpMethod.Get, path, null, "GetLinks");
+            return ok ? JsonConvert.DeserializeObject<List<TokenLink>>(body) ?? new List<TokenLink>() : new List<TokenLink>();
         }
 
-        /// <summary>
-        /// Remove/revoke a link token (disconnect account from game).
-        /// </summary>
+        /// <summary>PLANNED (not on server): revoke a link. DELETE /v1/sdk/links/{linkId}</summary>
         public async UniTask<bool> RemoveLinkAsync(string linkId)
         {
             if (string.IsNullOrEmpty(linkId))
                 throw new ArgumentNullException(nameof(linkId));
 
-            try
-            {
-                var response = await _httpClient.DeleteAsync(
-                    $"{_apiBaseUrl}/links/{linkId}"
-                ).AsUniTask();
-
-                var responseBody = await response.Content.ReadAsStringAsync();
-                var apiResponse = JsonUtility.FromJson<ApiResponse<bool>>(responseBody);
-
-                if (!apiResponse.Success)
-                {
-                    Debug.LogWarning($"[ConkistApi] RemoveLink failed: {apiResponse.Message}");
-                    return false;
-                }
-
-                onServiceLog?.Invoke($"[ConkistApi] Link {linkId} removed");
-                return true;
-            }
-            catch (HttpRequestException ex)
-            {
-                Debug.LogError($"[ConkistApi] Network error removing link: {ex.Message}");
-                return false;
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"[ConkistApi] Unexpected error removing link: {ex.Message}");
-                throw;
-            }
+            var (ok, _) = await CallAsync(HttpMethod.Delete, $"/v1/sdk/links/{Uri.EscapeDataString(linkId)}", null, "RemoveLink");
+            if (ok) onServiceLog?.Invoke($"[ConkistApi] Link {linkId} removed");
+            return ok;
         }
 
+        // ==================== Telemetry ====================
+
         /// <summary>
-        /// Refresh time-limited auth token for continued API access.
+        /// Sends one event. The server answers 202 even when the event name is not in the
+        /// project's approved list; unapproved events are dropped silently on the server.
+        /// POST /v1/sdk/telemetry
         /// </summary>
-        public async UniTask<AuthToken> RefreshAuthTokenAsync()
+        public async UniTask<bool> EventTriggerAsync(ConkistGameEvent gameEvent)
         {
-            if (string.IsNullOrEmpty(_currentUserId))
+            if (gameEvent == null)
+                throw new ArgumentNullException(nameof(gameEvent));
+
+            var timestamp = gameEvent.TimestampUnix > 0
+                ? DateTimeOffset.FromUnixTimeSeconds(gameEvent.TimestampUnix).UtcDateTime
+                : DateTime.UtcNow;
+
+            var payload = new
             {
-                Debug.LogWarning("[ConkistApi] Not logged in. Call LoginAsync first.");
-                return null;
-            }
-
-            try
-            {
-                var response = await _httpClient.PostAsync(
-                    $"{_apiBaseUrl}/auth/refresh",
-                    null
-                ).AsUniTask();
-
-                var responseBody = await response.Content.ReadAsStringAsync();
-                var apiResponse = JsonUtility.FromJson<ApiResponse<AuthToken>>(responseBody);
-
-                if (!apiResponse.Success)
+                events = new[]
                 {
-                    Debug.LogWarning($"[ConkistApi] Token refresh failed: {apiResponse.Message}");
-                    return null;
+                    new
+                    {
+                        eventName = gameEvent.EventName,
+                        timestamp,
+                        properties = gameEvent.Properties ?? new Dictionary<string, object>()
+                    }
                 }
+            };
 
-                _currentAuthToken = apiResponse.Data;
-                return _currentAuthToken;
-            }
-            catch (HttpRequestException ex)
-            {
-                Debug.LogError($"[ConkistApi] Network error refreshing token: {ex.Message}");
-                return null;
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"[ConkistApi] Unexpected error refreshing token: {ex.Message}");
-                throw;
-            }
+            var (ok, _) = await CallAsync(HttpMethod.Post, "/v1/sdk/telemetry", payload, "EventTrigger");
+            return ok;
         }
 
-        /// <summary>
-        /// Validate referral token for organization project access.
-        /// Static, project-specific token for group access.
-        /// </summary>
+        // ==================== Game and user data (PLANNED, not on server) ====================
+
+        /// <summary>PLANNED (not on server): read-only game configuration. GET /v1/sdk/games/{gameId}</summary>
+        public async UniTask<GameData> FetchGameDataAsync(string gameId)
+        {
+            if (string.IsNullOrEmpty(gameId))
+                throw new ArgumentNullException(nameof(gameId));
+
+            var (ok, body) = await CallAsync(HttpMethod.Get, $"/v1/sdk/games/{Uri.EscapeDataString(gameId)}", null, "FetchGameData");
+            return ok ? JsonConvert.DeserializeObject<GameData>(body) : null;
+        }
+
+        /// <summary>PLANNED (not on server): player profile and progress. GET /v1/sdk/players/{userId}</summary>
+        public async UniTask<UserData> FetchUserDataAsync(string userId)
+        {
+            if (string.IsNullOrEmpty(userId))
+                throw new ArgumentNullException(nameof(userId));
+
+            var (ok, body) = await CallAsync(HttpMethod.Get, $"/v1/sdk/players/{Uri.EscapeDataString(userId)}", null, "FetchUserData");
+            return ok ? JsonConvert.DeserializeObject<UserData>(body) : null;
+        }
+
+        /// <summary>PLANNED (not on server): save player data. PUT /v1/sdk/players/{userId}</summary>
+        public async UniTask<bool> SaveUserDataAsync(UserData userData)
+        {
+            if (userData == null)
+                throw new ArgumentNullException(nameof(userData));
+
+            var (ok, _) = await CallAsync(HttpMethod.Put, $"/v1/sdk/players/{Uri.EscapeDataString(userData.UserId ?? string.Empty)}", userData, "SaveUserData");
+            if (ok) onServiceLog?.Invoke($"[ConkistApi] User data saved for {userData.UserId}");
+            return ok;
+        }
+
+        /// <summary>PLANNED (not on server): organization project access. POST /v1/sdk/referral/validate</summary>
         public async UniTask<ValidateReferralTokenResponse> ValidateReferralTokenAsync(
             string projectId,
             string tokenValue,
@@ -460,45 +254,88 @@ namespace Conkist.GDK.Services.Backend
             if (string.IsNullOrEmpty(projectId) || string.IsNullOrEmpty(tokenValue))
                 throw new ArgumentNullException("Project ID and token cannot be null");
 
+            var (ok, body) = await CallAsync(HttpMethod.Post, "/v1/sdk/referral/validate", new { projectId, tokenValue, conkistUserId }, "ValidateReferralToken");
+            if (!ok) return null;
+
+            onServiceLog?.Invoke("[ConkistApi] Referral token validated for org");
+            return JsonConvert.DeserializeObject<ValidateReferralTokenResponse>(body);
+        }
+
+        // ==================== Internals ====================
+
+        private async UniTask<InitializeResult> OpenSessionAsync(string operation, string playerId)
+        {
+            var (ok, body) = await CallAsync(HttpMethod.Post, "/v1/sdk/initialize", new { publicKey = _publicKey, playerId }, operation, authenticated: false);
+            if (!ok) return null;
+
+            var session = JsonConvert.DeserializeObject<InitializeResult>(body);
+            _currentUserId = session.PlayerId;
+            _sessionToken = session.SessionToken;
+
+            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            _currentAuthToken = new AuthToken
+            {
+                Token = _sessionToken,
+                UserId = _currentUserId,
+                GameId = _gameId,
+                IssuedAtUnix = now,
+                ExpiresAtUnix = now + SessionLifetimeSeconds
+            };
+            return session;
+        }
+
+        /// <summary>
+        /// One HTTP call. Returns (true, body) on 2xx. HTTP errors, network errors and timeouts
+        /// are logged and return (false, ...). Any other exception is a programming error and propagates.
+        /// </summary>
+        private async UniTask<(bool ok, string body)> CallAsync(
+            HttpMethod method, string path, object payload, string operation, bool authenticated = true)
+        {
             try
             {
-                var request = new { projectId, tokenValue, conkistUserId };
-                var json = JsonUtility.ToJson(request);
-                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                using var request = new HttpRequestMessage(method, _apiBaseUrl.TrimEnd('/') + path);
+                if (payload != null)
+                    request.Content = new StringContent(JsonConvert.SerializeObject(payload), Encoding.UTF8, "application/json");
+                if (authenticated && !string.IsNullOrEmpty(_sessionToken))
+                    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _sessionToken);
 
-                var response = await _httpClient.PostAsync(
-                    $"{_apiBaseUrl}/referral/validate",
-                    content
-                ).AsUniTask();
+                using var response = await Http.SendAsync(request).AsUniTask();
+                var body = await response.Content.ReadAsStringAsync().AsUniTask();
 
-                var responseBody = await response.Content.ReadAsStringAsync();
-                var apiResponse = JsonUtility.FromJson<ApiResponse<ValidateReferralTokenResponse>>(responseBody);
+                if (response.IsSuccessStatusCode) return (true, body);
 
-                if (!apiResponse.Success)
-                {
-                    Debug.LogWarning($"[ConkistApi] ReferralToken validation failed: {apiResponse.Message}");
-                    return null;
-                }
-
-                onServiceLog?.Invoke($"[ConkistApi] Referral token validated for org");
-                return apiResponse.Data;
+                Debug.LogWarning($"[ConkistApi] {operation} failed ({(int)response.StatusCode}): {ReadMessage(body)}");
+                return (false, body);
             }
-            catch (HttpRequestException ex)
+            catch (Exception ex) when (ex is HttpRequestException || ex is TaskCanceledException)
             {
-                Debug.LogError($"[ConkistApi] Network error validating referral token: {ex.Message}");
-                return null;
+                Debug.LogError($"[ConkistApi] Network error during {operation}: {ex.Message}");
+                return (false, null);
             }
-            catch (Exception ex)
-            {
-                Debug.LogError($"[ConkistApi] Unexpected error validating referral token: {ex.Message}");
-                throw;
-            }
+        }
+
+        private static string ReadMessage(string body)
+        {
+            try { return JObject.Parse(body)["message"]?.ToString() ?? body; }
+            catch (JsonException) { return body; }
+        }
+
+        private class InitializeResult
+        {
+            [JsonProperty("playerId")] public string PlayerId { get; set; }
+            [JsonProperty("sessionToken")] public string SessionToken { get; set; }
+        }
+
+        private class CreateLinkResult
+        {
+            [JsonProperty("code")] public string Code { get; set; }
+            [JsonProperty("deeplink")] public string Deeplink { get; set; }
         }
     }
 
     // ==================== DTOs ====================
 
-    [System.Serializable]
+    [Serializable]
     public class GameData
     {
         public string GameId;
@@ -507,7 +344,7 @@ namespace Conkist.GDK.Services.Backend
         public long UpdatedAtUnix;
     }
 
-    [System.Serializable]
+    [Serializable]
     public class UserData
     {
         public string UserId;
@@ -518,7 +355,8 @@ namespace Conkist.GDK.Services.Backend
         public long LastActiveUnix;
     }
 
-    [System.Serializable]
+    /// <summary>Client-side view of the server's session token (5-minute lifetime).</summary>
+    [Serializable]
     public class AuthToken
     {
         public string Token;
@@ -528,7 +366,7 @@ namespace Conkist.GDK.Services.Backend
         public long IssuedAtUnix;
     }
 
-    [System.Serializable]
+    [Serializable]
     public class TokenLink
     {
         public string LinkId;
@@ -541,8 +379,16 @@ namespace Conkist.GDK.Services.Backend
         public Dictionary<string, object> Metadata;
     }
 
-    [System.Serializable]
-    public class GameEvent
+    /// <summary>Response of GET /v1/sdk/links/{code}/status. Status: pending, linked or expired.</summary>
+    [Serializable]
+    public class LinkStatus
+    {
+        [JsonProperty("status")] public string Status;
+        [JsonProperty("accountId")] public long? AccountId;
+    }
+
+    [Serializable]
+    public class ConkistGameEvent
     {
         public string EventId;
         public string EventName;
@@ -553,17 +399,7 @@ namespace Conkist.GDK.Services.Backend
         public string SessionId;
     }
 
-    [System.Serializable]
-    public class ApiResponse<T>
-    {
-        public bool Success;
-        public T Data;
-        public string Message;
-        public int StatusCode;
-        public Dictionary<string, string> Errors;
-    }
-
-    [System.Serializable]
+    [Serializable]
     public class ValidateReferralTokenResponse
     {
         public bool IsValid;

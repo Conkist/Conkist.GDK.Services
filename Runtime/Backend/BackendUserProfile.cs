@@ -20,7 +20,7 @@ namespace Conkist.GDK.Services.Backend
         /// <summary>
         /// Gets or sets the username of the player.
         /// </summary>
-        public string? Username { get; set; }
+        public string Username { get; set; }
 
         /// <summary>
         /// Gets or sets the creation date of the profile.

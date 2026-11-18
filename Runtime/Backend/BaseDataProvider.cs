@@ -35,7 +35,7 @@ namespace Conkist.GDK.Services.Backend
         /// <summary>
         /// Action invoked when an error occurs during data fetching.
         /// </summary>
-        public UnityAction? onError;
+        public UnityAction onError;
 
         /// <summary>
         /// Fetches the app data synchronously.

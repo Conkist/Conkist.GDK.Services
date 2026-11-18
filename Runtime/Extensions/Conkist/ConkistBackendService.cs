@@ -35,6 +35,16 @@ namespace Conkist.GDK.Services.Conkist
         [Tooltip("Debug API URL. Only used in Development Builds. Leave empty to use production (api.conkist.me).")]
         [SerializeField] private string _debugApiUrl;
 
+        [Tooltip("Create a connection code (QR + 8 digits) right after login. Turn off in screens where the player types a code from the app instead.")]
+        [SerializeField] private bool _autoGenerateConnectionCode = true;
+
+        /// <summary>Same as the inspector field. Set it before Start (for example in Awake).</summary>
+        public bool AutoGenerateConnectionCode
+        {
+            get => _autoGenerateConnectionCode;
+            set => _autoGenerateConnectionCode = value;
+        }
+
         [Space, Header("Telemetry Settings")]
         [Tooltip("Interval in seconds between automatic batch flushes.")]
         [SerializeField] private float _flushInterval = 10f;
@@ -80,6 +90,16 @@ namespace Conkist.GDK.Services.Conkist
         /// The short linking code returned by the API. Null if not retrieved.
         /// </summary>
         public string ConnectionCode { get; private set; }
+
+        /// <summary>
+        /// Id of the pending link behind <see cref="ConnectionCode"/>.
+        /// </summary>
+        public long ConnectionLinkId { get; private set; }
+
+        /// <summary>
+        /// When <see cref="ConnectionCode"/> stops working (the API gives it 5 minutes).
+        /// </summary>
+        public DateTime ConnectionExpiresAt { get; private set; }
 
         /// <summary>
         /// The deep-link URL returned by the API. Null if not retrieved.
@@ -169,16 +189,11 @@ namespace Conkist.GDK.Services.Conkist
 
             onServiceLog?.Invoke($"Initializing with API: {EffectiveApiUrl}");
 
-            var savedPlayerId = PlayerPrefs.GetString("Conkist_PlayerId", null);
-            var response = await _apiClient.InitializeSessionAsync(_publicKey, savedPlayerId);
+            var response = await InitializeWithStoredCredentialsAsync();
 
             if (response.IsSuccess && response.Data != null)
             {
                 _session.PlayerId = response.Data.PlayerId;
-                
-                // Persist the PlayerId locally so it can be reused in future sessions
-                PlayerPrefs.SetString("Conkist_PlayerId", _session.PlayerId);
-                PlayerPrefs.Save();
                 _session.SessionToken = response.Data.SessionToken;
                 _session.ExpiresAt = DateTime.UtcNow.AddMinutes(TokenLifetimeMinutes);
                 UpdateSessionTimes(_session.ExpiresAt);
@@ -194,7 +209,8 @@ namespace Conkist.GDK.Services.Conkist
                 OnSessionInitialized?.Invoke();
 
                 // Generate QR code after successful initialization
-                GenerateConnectionQRCodeAsync().Forget();
+                if (_autoGenerateConnectionCode)
+                    GenerateConnectionQRCodeAsync().Forget();
 
                 // Start the telemetry flush loop
                 StartFlushLoop().Forget();
@@ -215,6 +231,45 @@ namespace Conkist.GDK.Services.Conkist
             }
         }
 
+        private IPlayerCredentialStore _credentials = new PlayerPrefsCredentialStore();
+
+        /// <summary>Replaces where the player id and secret are kept (default: PlayerPrefs).</summary>
+        public void SetCredentialStore(IPlayerCredentialStore store)
+        {
+            _credentials = store ?? new PlayerPrefsCredentialStore();
+        }
+
+        /// <summary>
+        /// Starts a session with the saved player (id + secret), or creates a new anonymous player.
+        /// If the API refuses the saved secret, the saved player is dropped and a new one is created:
+        /// links of the old player stay on the server but this device can no longer manage them.
+        /// </summary>
+        private async UniTask<ApiResponse<InitializeResponse>> InitializeWithStoredCredentialsAsync()
+        {
+            var hadCredentials = _credentials.TryLoad(out var playerId, out var playerSecret);
+            var response = await _apiClient.InitializeSessionAsync(
+                _publicKey, hadCredentials ? playerId : null, hadCredentials ? playerSecret : null);
+
+            // 401 also means "bad public key": only drop the player when the API names the player credentials.
+            if (hadCredentials && response.IsUnauthorized && IsPlayerCredentialError(response.ErrorMessage))
+            {
+                Debug.LogWarning("[ConkistSDK] The saved player was refused by the API. Creating a new anonymous player.");
+                _credentials.Clear();
+                response = await _apiClient.InitializeSessionAsync(_publicKey);
+            }
+
+            if (response.IsSuccess && response.Data != null
+                && response.Data.IsNew && !string.IsNullOrEmpty(response.Data.PlayerSecret))
+            {
+                _credentials.Save(response.Data.PlayerId, response.Data.PlayerSecret);
+            }
+
+            return response;
+        }
+
+        internal static bool IsPlayerCredentialError(string errorBody) =>
+            !string.IsNullOrEmpty(errorBody) && errorBody.IndexOf("player credentials", StringComparison.OrdinalIgnoreCase) >= 0;
+
         /// <summary>
         /// Proactively refreshes the session token if it is expiring soon or expired.
         /// Called automatically before each telemetry batch flush.
@@ -226,8 +281,7 @@ namespace Conkist.GDK.Services.Conkist
 
             onServiceLog?.Invoke("Token expiring soon, refreshing session...");
 
-            var savedPlayerId = PlayerPrefs.GetString("Conkist_PlayerId", null);
-            var response = await _apiClient.InitializeSessionAsync(_publicKey, savedPlayerId);
+            var response = await InitializeWithStoredCredentialsAsync();
 
             if (response.IsSuccess && response.Data != null)
             {
@@ -310,13 +364,16 @@ namespace Conkist.GDK.Services.Conkist
             {
                 string deepLink = response.Data.Deeplink;
                 ConnectionCode = response.Data.Code;
+                ConnectionLinkId = response.Data.LinkId;
+                ConnectionExpiresAt = response.Data.ExpiresAt.ToUniversalTime();
                 ConnectionDeeplink = response.Data.Deeplink;
                 _cachedQRCode = QRCodeGenerator.Generate(deepLink, pixelsPerModule);
 
                 if (_cachedQRCode != null)
                 {
                     LastRefreshTime = DateTime.UtcNow;
-                    NextRefreshTime = _session.ExpiresAt.AddSeconds(-30);
+                    // Refresh the code a little before it expires.
+                    NextRefreshTime = ConnectionExpiresAt.AddSeconds(-15);
 
                     onServiceLog?.Invoke($"QR code generated for account linking. Code: {response.Data.Code}");
                     OnConnectionCodeReceived?.Invoke(ConnectionCode);
@@ -337,6 +394,18 @@ namespace Conkist.GDK.Services.Conkist
         }
 
         /// <summary>
+        /// Drops the current code and asks the API for a new one (the old pending code expires).
+        /// Fires <see cref="OnConnectionCodeReceived"/> on success.
+        /// </summary>
+        public async UniTask<Texture2D> RegenerateConnectionCodeAsync(int pixelsPerModule = 8)
+        {
+            if (!_isInitialized || _session == null || !_session.IsValid) return null;
+            if (!await RefreshSessionIfNeeded()) return null;
+            InvalidateQRCode();
+            return await GenerateConnectionQRCodeAsync(pixelsPerModule);
+        }
+
+        /// <summary>
         /// Checks the status of the current connection code (polling endpoint).
         /// </summary>
         public async UniTask<ApiResponse<GetLinkStatusResponse>> CheckLinkStatusAsync()
@@ -346,7 +415,85 @@ namespace Conkist.GDK.Services.Conkist
                 return ApiResponse<GetLinkStatusResponse>.Failure(400, "SDK not initialized or Connection Code missing.");
             }
 
-            return await _apiClient.GetLinkStatusAsync(ConnectionCode, _session.SessionToken);
+            return await _apiClient.GetLinkStatusAsync(ConnectionLinkId, _session.SessionToken);
+        }
+
+        /// <summary>
+        /// The player types a code that a Conkist account generated in the app.
+        /// On success the link is confirmed at once. Check <c>IsRateLimited</c> on the result: after
+        /// 5 wrong codes the API locks this player for 15 minutes.
+        /// </summary>
+        public async UniTask<ApiResponse<RedeemLinkResponse>> RedeemAccountCodeAsync(string code)
+        {
+            if (!_isInitialized || _session == null || !_session.IsValid)
+                return ApiResponse<RedeemLinkResponse>.Failure(400, "SDK not initialized.");
+            if (!await RefreshSessionIfNeeded())
+                return ApiResponse<RedeemLinkResponse>.Failure(401, "Session expired.");
+
+            return await _apiClient.RedeemLinkAsync(code, _session.SessionToken);
+        }
+
+        /// <summary>
+        /// One door for both kinds of code. Pass what the player typed or what a QR reader returned (a bare code or a link).
+        /// An 8-digit account code confirms a connection (<c>Data.IsLink</c>); a room code joins a room (<c>Data.IsRoom</c>, <c>Data.Room</c>).
+        /// A text that is not a code at all is refused here with status 400, without calling the server.
+        /// After 5 wrong codes the API locks this player for 15 minutes (<c>IsRateLimited</c>).
+        /// </summary>
+        public async UniTask<ApiResponse<RedeemCodeResponse>> RedeemCodeAsync(string codeOrLink)
+        {
+            var code = ConkistCodeParser.Normalize(codeOrLink);
+            if (code == null)
+                return ApiResponse<RedeemCodeResponse>.Failure(400, "{\"message\":\"Invalid or expired code.\"}");
+            if (!_isInitialized || _session == null || !_session.IsValid)
+                return ApiResponse<RedeemCodeResponse>.Failure(400, "SDK not initialized.");
+            if (!await RefreshSessionIfNeeded())
+                return ApiResponse<RedeemCodeResponse>.Failure(401, "Session expired.");
+
+            return await _apiClient.RedeemCodeAsync(code, _session.SessionToken);
+        }
+
+        /// <summary>The rooms this player is in.</summary>
+        public async UniTask<ApiResponse<List<SdkRoom>>> GetRoomsAsync()
+        {
+            if (!_isInitialized || _session == null || !_session.IsValid)
+                return ApiResponse<List<SdkRoom>>.Failure(400, "SDK not initialized.");
+            if (!await RefreshSessionIfNeeded())
+                return ApiResponse<List<SdkRoom>>.Failure(401, "Session expired.");
+
+            return await _apiClient.GetRoomsAsync(_session.SessionToken);
+        }
+
+        /// <summary>The player leaves a room. The teacher no longer sees this student.</summary>
+        public async UniTask<ApiResponse<string>> LeaveRoomAsync(long roomId)
+        {
+            if (!_isInitialized || _session == null || !_session.IsValid)
+                return ApiResponse<string>.Failure(400, "SDK not initialized.");
+            if (!await RefreshSessionIfNeeded())
+                return ApiResponse<string>.Failure(401, "Session expired.");
+
+            return await _apiClient.LeaveRoomAsync(roomId, _session.SessionToken);
+        }
+
+        /// <summary>The Conkist accounts this player is connected to (confirmed links only).</summary>
+        public async UniTask<ApiResponse<List<PlayerLink>>> GetLinksAsync()
+        {
+            if (!_isInitialized || _session == null || !_session.IsValid)
+                return ApiResponse<List<PlayerLink>>.Failure(400, "SDK not initialized.");
+            if (!await RefreshSessionIfNeeded())
+                return ApiResponse<List<PlayerLink>>.Failure(401, "Session expired.");
+
+            return await _apiClient.GetLinksAsync(_session.SessionToken);
+        }
+
+        /// <summary>The player cancels a link (or the pending code). The account side sees it as revoked.</summary>
+        public async UniTask<ApiResponse<string>> RevokeLinkAsync(long linkId)
+        {
+            if (!_isInitialized || _session == null || !_session.IsValid)
+                return ApiResponse<string>.Failure(400, "SDK not initialized.");
+            if (!await RefreshSessionIfNeeded())
+                return ApiResponse<string>.Failure(401, "Session expired.");
+
+            return await _apiClient.RevokeLinkAsync(linkId, _session.SessionToken);
         }
 
         /// <summary>
@@ -462,8 +609,7 @@ namespace Conkist.GDK.Services.Conkist
                     Debug.LogWarning("[ConkistSDK] 401 Unauthorized on telemetry send. Refreshing session...");
                     _session.SessionToken = null;
 
-                    var savedPlayerId = PlayerPrefs.GetString("Conkist_PlayerId", null);
-                    var refreshResponse = await _apiClient.InitializeSessionAsync(_publicKey, savedPlayerId);
+                    var refreshResponse = await InitializeWithStoredCredentialsAsync();
                     if (refreshResponse.IsSuccess && refreshResponse.Data != null)
                     {
                         _session.SessionToken = refreshResponse.Data.SessionToken;

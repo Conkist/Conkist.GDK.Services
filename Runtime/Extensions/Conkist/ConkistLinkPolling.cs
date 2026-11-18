@@ -27,6 +27,9 @@ namespace Conkist.GDK.Services.Conkist
         
         [Tooltip("Fired if the linking code expires before the user links it.")]
         public UnityEvent OnLinkExpired;
+
+        [Tooltip("Fired if the account cancels the pending link.")]
+        public UnityEvent OnLinkRevoked;
         
         [Tooltip("Fired when a polling error occurs.")]
         public UnityEvent<string> OnError;
@@ -116,16 +119,22 @@ namespace Conkist.GDK.Services.Conkist
 
                 if (response.IsSuccess)
                 {
-                    if (response.Data.Status == "confirmed")
+                    if (response.Data.Status == LinkStatusNames.Confirmed)
                     {
                         StopPolling();
                         OnLinkDetected?.Invoke();
                         break;
                     }
-                    else if (response.Data.Status == "expired")
+                    else if (response.Data.Status == LinkStatusNames.Expired)
                     {
                         StopPolling();
                         OnLinkExpired?.Invoke();
+                        break;
+                    }
+                    else if (response.Data.Status == LinkStatusNames.Revoked)
+                    {
+                        StopPolling();
+                        OnLinkRevoked?.Invoke();
                         break;
                     }
                 }

@@ -170,7 +170,7 @@ namespace Conkist.GDK.Services.Tests
             await _service.InitializeAsync("placeholder", "game-id");
             var userId = await _service.LoginAsync();
 
-            var gameEvent = new GameEvent
+            var gameEvent = new ConkistGameEvent
             {
                 EventId = System.Guid.NewGuid().ToString(),
                 EventName = "LevelCompleted",
